@@ -26,14 +26,35 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-BASE = "https://nar.netkeiba.com/race/data_list.html"
+PAGES = {
+    "data_list": "https://nar.netkeiba.com/race/data_list.html",
+    "shutuba": "https://nar.netkeiba.com/race/shutuba.html",
+}
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
+TRACK_CODES = {
+    "門別": "30", "盛岡": "35", "水沢": "36", "浦和": "42", "船橋": "43",
+    "大井": "44", "川崎": "45", "金沢": "46", "笠松": "47", "名古屋": "48",
+    "園田": "50", "姫路": "51", "高知": "54", "佐賀": "55", "帯広": "65",
+}
+
 # 川崎 2026/08/17 10R-12R
 DEFAULT_RACE_IDS = ["202645081710", "202645081711", "202645081712"]
+
+
+def build_race_ids(track: str, date: str, races) -> list:
+    """競馬場名・日付(YYYY-MM-DD or YYYYMMDD)・R番号から race_id を組み立てる。"""
+    if track not in TRACK_CODES:
+        raise SystemExit(
+            f"未知の競馬場: {track} (指定可能: {'/'.join(TRACK_CODES)})"
+        )
+    ymd = date.replace("-", "").replace("/", "")
+    if not re.fullmatch(r"\d{8}", ymd):
+        raise SystemExit(f"日付は YYYY-MM-DD 形式で指定してください: {date}")
+    return [f"{ymd[:4]}{TRACK_CODES[track]}{ymd[4:]}{int(r):02d}" for r in races]
 
 
 class TableParser(HTMLParser):
@@ -85,9 +106,12 @@ def detect_charset(raw: bytes, content_type: str) -> str:
     return "utf-8"
 
 
-def fetch(race_id: str, mode: str, cid: str) -> str:
-    url = f"{BASE}?race_id={race_id}&mode={mode}&cid={cid}"
-    req = Request(url, headers={"User-Agent": UA, "Referer": BASE})
+def fetch(race_id: str, mode: str, cid: str, page: str = "data_list") -> str:
+    base = PAGES[page]
+    url = f"{base}?race_id={race_id}"
+    if page == "data_list":
+        url += f"&mode={mode}&cid={cid}"
+    req = Request(url, headers={"User-Agent": UA, "Referer": base})
     with urlopen(req, timeout=30) as resp:
         raw = resp.read()
         charset = detect_charset(raw, resp.headers.get("Content-Type", ""))
@@ -102,27 +126,42 @@ def fetch(race_id: str, mode: str, cid: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("race_ids", nargs="*", default=DEFAULT_RACE_IDS)
+    ap.add_argument("--track", help="競馬場名 (例: 大井)。--date と併用")
+    ap.add_argument("--date", help="開催日 YYYY-MM-DD。--track と併用")
+    ap.add_argument(
+        "--races",
+        nargs="+",
+        default=["10", "11", "12"],
+        help="R番号。トリプル馬単の対象は最終3レース (既定: 10 11 12)",
+    )
+    ap.add_argument("--page", default="data_list", choices=sorted(PAGES))
     ap.add_argument("--mode", default="others")
     ap.add_argument("--cid", default="0")
     ap.add_argument("--out", default=".", type=Path)
     ap.add_argument("--sleep", default=1.0, type=float, help="リクエスト間隔(秒)")
     args = ap.parse_args()
 
+    if bool(args.track) != bool(args.date):
+        raise SystemExit("--track と --date は両方セットで指定してください")
+    if args.track:
+        race_ids = build_race_ids(args.track, args.date, args.races)
+    else:
+        race_ids = args.race_ids or DEFAULT_RACE_IDS
+
     args.out.mkdir(parents=True, exist_ok=True)
-    race_ids = args.race_ids or DEFAULT_RACE_IDS
     failed = []
 
     for i, race_id in enumerate(race_ids):
         if i:
             time.sleep(args.sleep)
         try:
-            html = fetch(race_id, args.mode, args.cid)
+            html = fetch(race_id, args.mode, args.cid, args.page)
         except Exception as exc:
             print(f"[NG] {race_id}: {exc}", file=sys.stderr)
             failed.append(race_id)
             continue
 
-        stem = f"{race_id}_{args.mode}"
+        stem = f"{race_id}_{args.page}_{args.mode}"
         (args.out / f"{stem}.html").write_text(html, encoding="utf-8")
 
         parser = TableParser()
