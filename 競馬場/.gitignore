@@ -1,0 +1,4 @@
+# fetch_netkeiba_data_list.py の出力
+*.html
+*.csv
+__pycache__/
