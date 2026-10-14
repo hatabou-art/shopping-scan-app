@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """netkeiba(地方競馬) の data_list ページからデータ表を取得して CSV に落とす。
 
+トリプル馬単の対象は「最終レースからさかのぼる3レース」で、開催日ごとに
+レース数が違う (10R制の日は 8R-10R、12R制の日は 10R-12R)。--final-race に
+その日の最終レース番号を渡すこと。
+
 例:
-    # 川崎 2026/08/17 10R-12R の mode=others を取得
-    python3 fetch_netkeiba_data_list.py
+    # 大井 2026/08/15 は10R制 -> 8R/9R/10R
+    python3 fetch_netkeiba_data_list.py --track 大井 --date 2026-08-15 --final-race 10
 
-    # race_id を明示
-    python3 fetch_netkeiba_data_list.py 202645081710 202645081711
+    # R を明示指定
+    python3 fetch_netkeiba_data_list.py --track 川崎 --date 2026-08-17 --races 10 11 12
 
-    # 別のタブ
-    python3 fetch_netkeiba_data_list.py --mode others --out ./out
+    # race_id を直接指定
+    python3 fetch_netkeiba_data_list.py 202644081508 --page shutuba
 
 race_id = 年(4) + 場コード(2) + 月日(4) + R(2)
 場コード: 30 門別 / 35 盛岡 / 36 水沢 / 42 浦和 / 43 船橋 / 44 大井 /
@@ -41,8 +45,17 @@ TRACK_CODES = {
     "園田": "50", "姫路": "51", "高知": "54", "佐賀": "55", "帯広": "65",
 }
 
-# 川崎 2026/08/17 10R-12R
-DEFAULT_RACE_IDS = ["202645081710", "202645081711", "202645081712"]
+
+
+def triple_umatan_races(final_race: int) -> list:
+    """トリプル馬単の対象は最終レースからさかのぼる3レース。
+
+    開催日ごとにレース数が違うので、最終レース番号から導く必要がある。
+    10R制なら 8R-10R、12R制なら 10R-12R。
+    """
+    if final_race < 3:
+        raise SystemExit(f"最終レースが {final_race}R では対象3レースを取れません")
+    return [final_race - 2, final_race - 1, final_race]
 
 
 def build_race_ids(track: str, date: str, races) -> list:
@@ -125,14 +138,15 @@ def fetch(race_id: str, mode: str, cid: str, page: str = "data_list") -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("race_ids", nargs="*", default=DEFAULT_RACE_IDS)
+    ap.add_argument("race_ids", nargs="*")
     ap.add_argument("--track", help="競馬場名 (例: 大井)。--date と併用")
     ap.add_argument("--date", help="開催日 YYYY-MM-DD。--track と併用")
+    ap.add_argument("--races", nargs="+", help="取得する R 番号を明示指定")
     ap.add_argument(
-        "--races",
-        nargs="+",
-        default=["10", "11", "12"],
-        help="R番号。トリプル馬単の対象は最終3レース (既定: 10 11 12)",
+        "--final-race",
+        type=int,
+        help="その開催日の最終レース番号。トリプル馬単の対象3レースを自動算出する"
+        " (例: --final-race 10 なら 8R/9R/10R)",
     )
     ap.add_argument("--page", default="data_list", choices=sorted(PAGES))
     ap.add_argument("--mode", default="others")
@@ -143,10 +157,26 @@ def main() -> int:
 
     if bool(args.track) != bool(args.date):
         raise SystemExit("--track と --date は両方セットで指定してください")
+    if args.races and args.final_race:
+        raise SystemExit("--races と --final-race はどちらか一方にしてください")
+
     if args.track:
-        race_ids = build_race_ids(args.track, args.date, args.races)
+        if args.final_race:
+            races = triple_umatan_races(args.final_race)
+        elif args.races:
+            races = args.races
+        else:
+            raise SystemExit(
+                "--races か --final-race を指定してください。"
+                " トリプル馬単の対象は最終レースからさかのぼる3レースで、"
+                " 開催日ごとにレース数が異なります"
+                " (例: 10R制の日は --final-race 10 で 8R/9R/10R)"
+            )
+        race_ids = build_race_ids(args.track, args.date, races)
+    elif args.race_ids:
+        race_ids = args.race_ids
     else:
-        race_ids = args.race_ids or DEFAULT_RACE_IDS
+        raise SystemExit("race_id、または --track と --date を指定してください")
 
     args.out.mkdir(parents=True, exist_ok=True)
     failed = []
