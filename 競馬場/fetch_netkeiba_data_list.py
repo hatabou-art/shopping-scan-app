@@ -33,6 +33,7 @@ from urllib.request import Request, urlopen
 PAGES = {
     "data_list": "https://nar.netkeiba.com/race/data_list.html",
     "shutuba": "https://nar.netkeiba.com/race/shutuba.html",
+    "result": "https://nar.netkeiba.com/race/result.html",
 }
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
