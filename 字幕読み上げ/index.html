@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>字幕読み上げ</title>
+<style>
+  :root {
+    --bg: #f6f7f4; --card: #fff; --text: #1d2420; --muted: #5f6b64; --line: #dde3de;
+    --accent: #2f6fb3; --bad: #c0392b; --region: #ffcc00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141816; --card: #1d2320; --text: #e8ece9; --muted: #9aa69f; --line: #2e3632;
+      --accent: #5b9be0; --bad: #e5675a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .lead { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    flex: 1; min-width: 120px; padding: 14px; border: 0; border-radius: 12px;
+    background: var(--accent); color: #fff; font-size: 16px; font-weight: 600; cursor: pointer;
+  }
+  button.sub { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  .stage { position: relative; margin-top: 12px; display: none; touch-action: none; user-select: none; }
+  .stage video { width: 100%; display: block; border-radius: 10px; background: #000; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  .now { font-size: 20px; font-weight: 600; min-height: 2em; margin: 0; word-break: break-all; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .stat { border: 1px solid var(--line); border-radius: 10px; padding: 8px; text-align: center; }
+  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 12px; color: var(--muted); }
+  label { display: flex; align-items: center; gap: 8px; font-size: 14px; margin: 6px 0; }
+  label > span:first-child { flex: none; width: 8.5em; color: var(--muted); }
+  label input[type=range], label select { flex: 1; min-width: 0; }
+  label output { width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
+  .status { color: var(--muted); font-size: 14px; margin: 8px 0 0; min-height: 1.5em; }
+  .error { color: var(--bad); }
+  ol { margin: 0; padding-left: 1.4em; font-size: 14px; }
+  ol li { margin: 2px 0; }
+  ol small { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #debug { display: none; max-width: 100%; margin-top: 8px; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+  <h1>字幕読み上げ</h1>
+  <p class="lead">テレビや動画の字幕をカメラ・画面共有で読み取り、出た順に音声で読み上げます（試作版）。</p>
+
+  <section class="card">
+    <div class="row">
+      <button id="btnCamera">カメラで開始</button>
+      <button id="btnScreen" class="sub">画面共有で開始</button>
+      <button id="btnStop" class="sub" disabled>停止</button>
+    </div>
+    <div class="stage" id="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <p class="hint" id="regionHint" hidden>黄色い枠が読み取る範囲です。映像の上をドラッグして字幕の位置に合わせてください。</p>
+    <p class="status" id="status"></p>
+  </section>
+
+  <section class="card">
+    <p class="now" id="now">　</p>
+    <div class="stats">
+      <div class="stat"><b id="statOcr">-</b><span>文字読み取り (ms)</span></div>
+      <div class="stat"><b id="statLag">-</b><span>撮影→発声 (ms)</span></div>
+      <div class="stat"><b id="statAvg">-</b><span>平均の遅れ (ms)</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <label><span>読み上げ速度</span><input id="rate" type="range" min="0.8" max="2.5" step="0.1" value="1.4"><output id="rateOut"></output></label>
+    <label><span>声</span><select id="voice"></select></label>
+    <label><span>読み取り間隔</span><input id="interval" type="range" min="200" max="1500" step="100" value="400"><output id="intervalOut"></output></label>
+    <label><span>確からしさの下限</span><input id="minConf" type="range" min="30" max="90" step="5" value="55"><output id="minConfOut"></output></label>
+    <label><span>次の字幕が出たら</span>
+      <select id="policy">
+        <option value="latest">すぐ切り替え（遅れが溜まらない）</option>
+        <option value="queue">読み終えてから（取りこぼしなし）</option>
+      </select>
+    </label>
+    <label><span>字幕の文字色</span>
+      <select id="textColor">
+        <option value="white">白</option>
+        <option value="yellow">黄色</option>
+        <option value="dark">黒・濃い色（明るい背景）</option>
+      </select>
+    </label>
+    <label><input id="stabilize" type="checkbox"> 2回続けて同じ文字なら読む（誤読が減るが少し遅れる）</label>
+    <label><input id="showDebug" type="checkbox"> 読み取り画像を表示</label>
+    <canvas id="debug"></canvas>
+  </section>
+
+  <section class="card">
+    <ol id="log" reversed></ol>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const video = $('video'), overlay = $('overlay'), ctxO = overlay.getContext('2d');
+const work = document.createElement('canvas'), ctxW = work.getContext('2d', { willReadFrequently: true });
+const debug = $('debug');
+
+let stream = null, worker = null, running = false, timer = null;
+// 読み取り範囲（映像に対する割合）。初期値は画面下部の字幕帯
+let region = { x: 0.05, y: 0.72, w: 0.9, h: 0.24 };
+let prevThumb = null, settled = false, lastOcrText = '';
+let lastSpoken = '', pending = null;
+const lags = [];
+
+// ---- 設定表示 ----
+for (const [id, fmt] of [['rate', v => '×' + v], ['interval', v => v], ['minConf', v => v]]) {
+  const el = $(id), out = $(id + 'Out');
+  const upd = () => out.textContent = fmt(el.value);
+  el.addEventListener('input', upd); upd();
+}
+$('showDebug').addEventListener('change', e => debug.style.display = e.target.checked ? 'block' : 'none');
+
+function loadVoices() {
+  const voices = speechSynthesis.getVoices().filter(v => v.lang.replace('_', '-').startsWith('ja'));
+  const sel = $('voice'), cur = sel.value;
+  sel.innerHTML = '';
+  for (const v of voices) {
+    const o = document.createElement('option');
+    o.value = v.name; o.textContent = v.name + (v.localService ? '' : '（オンライン）');
+    sel.appendChild(o);
+  }
+  if (!voices.length) sel.innerHTML = '<option value="">（端末の標準）</option>';
+  if (cur) sel.value = cur;
+}
+speechSynthesis.onvoiceschanged = loadVoices;
+loadVoices();
+
+function setStatus(msg, isError = false) {
+  $('status').textContent = msg;
+  $('status').className = 'status' + (isError ? ' error' : '');
+}
+
+// ---- 開始・停止 ----
+async function start(kind) {
+  try {
+    // iOS などはボタン操作の中で一度話させないと、以降の読み上げが鳴らない
+    speechSynthesis.speak(new SpeechSynthesisUtterance(''));
+    stream = kind === 'camera'
+      ? await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false })
+      : await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 10 }, audio: false });
+  } catch (e) {
+    const insecure = !window.isSecureContext ? '（HTTPS か localhost で開く必要があります）' : '';
+    setStatus('映像を取得できませんでした: ' + e.message + insecure, true);
+    return;
+  }
+  stream.getVideoTracks()[0].addEventListener('ended', stop);
+  video.srcObject = stream;
+  await video.play();
+  $('stage').style.display = 'block';
+  $('regionHint').hidden = false;
+  $('btnCamera').disabled = $('btnScreen').disabled = true;
+  $('btnStop').disabled = false;
+  drawOverlay();
+
+  if (!worker) {
+    setStatus('文字読み取りの準備中…（初回は日本語データを数MBダウンロードします）');
+    try {
+      worker = await Tesseract.createWorker('jpn', 1);
+      // 7 = 1行として読む（行は grab() で分けてから渡す）
+      await worker.setParameters({ tessedit_pageseg_mode: '7', preserve_interword_spaces: '1' });
+    } catch (e) {
+      worker = null;
+      setStatus('文字読み取りの準備に失敗しました（インターネット接続を確認してください）: ' + (e.message || e), true);
+      return;
+    }
+  }
+  if (!stream) return; // 準備中に停止された
+  setStatus('読み取り中');
+  running = true;
+  loop();
+}
+
+function stop() {
+  running = false;
+  clearTimeout(timer);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  speechSynthesis.cancel();
+  $('stage').style.display = 'none';
+  $('regionHint').hidden = true;
+  $('btnCamera').disabled = $('btnScreen').disabled = false;
+  $('btnStop').disabled = true;
+  prevThumb = null; lastOcrText = ''; pending = null;
+  setStatus('停止しました');
+}
+
+$('btnCamera').onclick = () => start('camera');
+$('btnScreen').onclick = () => start('screen');
+$('btnStop').onclick = stop;
+if (!navigator.mediaDevices?.getDisplayMedia) $('btnScreen').style.display = 'none';
+
+// ---- 読み取り範囲の指定（ドラッグ） ----
+function drawOverlay() {
+  const r = overlay.getBoundingClientRect();
+  overlay.width = r.width * devicePixelRatio; overlay.height = r.height * devicePixelRatio;
+  const W = overlay.width, H = overlay.height;
+  ctxO.clearRect(0, 0, W, H);
+  ctxO.fillStyle = 'rgba(0,0,0,.45)';
+  ctxO.fillRect(0, 0, W, H);
+  ctxO.clearRect(region.x * W, region.y * H, region.w * W, region.h * H);
+  ctxO.strokeStyle = getComputedStyle(document.body).getPropertyValue('--region');
+  ctxO.lineWidth = 3 * devicePixelRatio;
+  ctxO.strokeRect(region.x * W, region.y * H, region.w * W, region.h * H);
+}
+window.addEventListener('resize', () => stream && drawOverlay());
+video.addEventListener('loadedmetadata', () => stream && drawOverlay());
+
+let dragStart = null;
+function rel(e) {
+  const r = overlay.getBoundingClientRect();
+  return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
+}
+overlay.addEventListener('pointerdown', e => { dragStart = rel(e); overlay.setPointerCapture(e.pointerId); });
+overlay.addEventListener('pointermove', e => {
+  if (!dragStart) return;
+  const p = rel(e);
+  const w = Math.abs(p.x - dragStart.x), h = Math.abs(p.y - dragStart.y);
+  if (w < 0.05 || h < 0.03) return;
+  region = { x: Math.min(p.x, dragStart.x), y: Math.min(p.y, dragStart.y), w, h };
+  prevThumb = null;
+  drawOverlay();
+});
+overlay.addEventListener('pointerup', () => dragStart = null);
+
+// ---- 読み取りループ ----
+function grab() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const sx = region.x * vw, sy = region.y * vh, sw = region.w * vw, sh = region.h * vh;
+  const scale = Math.min(1, 1280 / sw); // 大きすぎる映像だけ縮小（拡大すると読み取り精度が落ちる）
+  work.width = Math.round(sw * scale); work.height = Math.round(sh * scale);
+  ctxW.drawImage(video, sx, sy, sw, sh, 0, 0, work.width, work.height);
+  const W = work.width, H = work.height;
+  const img = ctxW.getImageData(0, 0, W, H), d = img.data;
+  // 字幕の文字色に近い画素だけを黒、それ以外を白にして、背景の映像を消す
+  const color = $('textColor').value;
+  const rows = new Uint16Array(H), cols = new Uint16Array(W);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    let ink;
+    if (color === 'white') ink = Math.min(r, g, b) > 170;
+    else if (color === 'yellow') ink = r > 170 && g > 150 && b < 110;
+    else ink = 0.299 * r + 0.587 * g + 0.114 * b < 90;
+    d[i] = d[i + 1] = d[i + 2] = ink ? 0 : 255;
+    if (ink) { rows[(p / W) | 0]++; cols[p % W]++; }
+  }
+  ctxW.putImageData(img, 0, 0);
+  const th = thumb();
+
+  // 行ごとに切り出す（字幕は1〜2行。1行ずつ読むほうが正確）
+  const NOISE = 2; // 点状のノイズは無視する
+  const x0 = cols.findIndex(n => n > NOISE);
+  if (x0 < 0) return { th, lines: [] };
+  const x1 = W - 1 - [...cols].reverse().findIndex(n => n > NOISE);
+  let bands = [];
+  for (let y = 0; y < H; y++) {
+    if (rows[y] <= NOISE) continue;
+    const last = bands[bands.length - 1];
+    if (last && y - last.y1 <= 3) last.y1 = y; else bands.push({ y0: y, y1: y });
+  }
+  // 濁点や「二」のように行から離れた小さな断片は隣の行につなげる
+  for (let i = 1; i < bands.length; i++) {
+    const a = bands[i - 1], b = bands[i], ha = a.y1 - a.y0, hb = b.y1 - b.y0;
+    if (Math.min(ha, hb) < 0.4 * Math.max(ha, hb)) { a.y1 = b.y1; bands.splice(i--, 1); }
+  }
+  bands = bands.filter(b => b.y1 - b.y0 >= 8);
+
+  // 文字の高さを約30pxにそろえる（Tesseract が最も安定する大きさ）
+  const TARGET = 30, pad = 10;
+  const lines = bands.map(b => {
+    const bw = x1 - x0 + 1, bh = b.y1 - b.y0 + 1, k = Math.min(2, TARGET / bh);
+    const c = document.createElement('canvas');
+    c.width = Math.round(bw * k) + pad * 2; c.height = Math.round(bh * k) + pad * 2;
+    const cx = c.getContext('2d');
+    cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height);
+    cx.imageSmoothingQuality = 'high';
+    cx.drawImage(work, x0, b.y0, bw, bh, pad, pad, c.width - pad * 2, c.height - pad * 2);
+    return c;
+  });
+  if ($('showDebug').checked) {
+    debug.width = Math.max(1, ...lines.map(c => c.width));
+    debug.height = Math.max(1, lines.reduce((s, c) => s + c.height, 0));
+    const dc = debug.getContext('2d');
+    let y = 0;
+    for (const c of lines) { dc.drawImage(c, 0, y); y += c.height; }
+  }
+  return { th, lines };
+}
+
+// 前回と画面がほぼ同じなら文字読み取りを省く（負荷と遅れを減らす）
+function thumb() {
+  const t = document.createElement('canvas'); t.width = 48; t.height = 12;
+  const c = t.getContext('2d', { willReadFrequently: true });
+  c.drawImage(work, 0, 0, 48, 12);
+  const d = c.getImageData(0, 0, 48, 12).data, out = new Uint8Array(48 * 12);
+  for (let i = 0; i < out.length; i++) out[i] = d[i * 4];
+  return out;
+}
+function thumbDiff(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]);
+  return s / a.length;
+}
+
+async function loop() {
+  if (!running) return;
+  const t0 = performance.now();
+  try {
+    if (video.videoWidth) {
+      const { th, lines } = grab();
+      // 変化中（字幕の切り替わり途中）の読み取りは崩れやすいので、
+      // 画面が落ち着いてからもう1回だけ読み直し、その後は変化があるまで省く
+      let needOcr = true;
+      if (!prevThumb || thumbDiff(th, prevThumb) > 4) settled = false;
+      else if (!settled) settled = true;
+      else needOcr = false;
+      prevThumb = th;
+      if (!lines.length) {
+        handleText('', 0, t0); // 字幕なし
+      } else if (needOcr) {
+        let text = '', conf = 0;
+        for (const line of lines) {
+          const { data } = await worker.recognize(line);
+          text += data.text + '\n';
+          conf += data.confidence / lines.length;
+        }
+        const ms = performance.now() - t0;
+        $('statOcr').textContent = Math.round(ms);
+        handleText(clean(text), conf, t0);
+      }
+    }
+  } catch (e) {
+    setStatus('読み取りエラー: ' + e.message, true);
+  }
+  if (running) timer = setTimeout(loop, Math.max(0, +$('interval').value - (performance.now() - t0)));
+}
+
+// Tesseract は日本語の文字の間に空白を入れるので取り除く
+function clean(text) {
+  return text
+    .replace(/[|｜_~＿]/g, '')
+    .split('\n').map(l => l.trim()).filter(Boolean).join(' ')
+    .replace(/(?<=[^\x00-\x7F])\s+(?=[^\x00-\x7F])/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function similarity(a, b) {
+  if (!a || !b) return 0;
+  const m = a.length, n = b.length;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return 1 - prev[n] / Math.max(m, n);
+}
+
+const SAME = 0.7; // これ以上似ていれば同じ字幕（読み取りの揺れ）とみなす
+
+function handleText(text, conf, capturedAt) {
+  const jpChars = (text.match(/[぀-ヿ一-鿿]/g) || []).length;
+  if (conf < +$('minConf').value || jpChars < 2) {
+    // 字幕が消えた。次に同じ文が出たらまた読めるようにする
+    if (lastOcrText) lastSpoken = '';
+    lastOcrText = ''; pending = null;
+    return;
+  }
+  lastOcrText = text;
+  if (similarity(text, lastSpoken) >= SAME) return;
+
+  if ($('stabilize').checked) {
+    if (pending && similarity(text, pending.text) >= SAME) {
+      speak(text, pending.at);
+      pending = null;
+    } else {
+      pending = { text, at: capturedAt };
+    }
+    return;
+  }
+  speak(text, capturedAt);
+}
+
+function speak(text, capturedAt) {
+  lastSpoken = text;
+  $('now').textContent = text;
+  if ($('policy').value === 'latest') speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ja-JP';
+  u.rate = +$('rate').value;
+  const v = speechSynthesis.getVoices().find(v => v.name === $('voice').value);
+  if (v) u.voice = v;
+  const li = document.createElement('li');
+  li.textContent = text + ' ';
+  const small = document.createElement('small');
+  small.textContent = '（読み上げ待ち）';
+  li.appendChild(small);
+  $('log').prepend(li);
+  while ($('log').children.length > 30) $('log').lastChild.remove();
+  let started = false;
+  u.onstart = () => {
+    started = true;
+    const lag = Math.round(performance.now() - capturedAt);
+    lags.push(lag); if (lags.length > 20) lags.shift();
+    $('statLag').textContent = lag;
+    $('statAvg').textContent = Math.round(lags.reduce((a, b) => a + b, 0) / lags.length);
+    small.textContent = `（${lag} ms）`;
+  };
+  u.onerror = (e) => {
+    if (e.error !== 'interrupted' && e.error !== 'canceled') small.textContent = '（読み上げ失敗: ' + e.error + '）';
+    else if (!started) small.textContent = '（飛ばしました）';
+  };
+  speechSynthesis.speak(u);
+}
+</script>
+</body>
+</html>
