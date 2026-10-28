@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>競馬レースゲーム</title>
+<style>
+  :root {
+    --bg: #f4f1ea; --card: #ffffff; --text: #222; --muted: #666;
+    --turf: #3f8f3f; --turf-line: #5fae5f; --accent: #c0392b; --gold: #d4a017;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181c; --card: #23262c; --text: #eee; --muted: #aaa;
+      --turf: #2c6b2c; --turf-line: #3f8a3f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 8px; }
+  .bar { display: flex; justify-content: space-between; align-items: center;
+    background: var(--card); padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; }
+  .coins { font-weight: bold; color: var(--gold); font-size: 1.2rem; }
+  .track { background: var(--turf); border-radius: 10px; padding: 6px 0; position: relative; overflow: hidden; }
+  .lane { position: relative; height: 40px; border-bottom: 1px dashed var(--turf-line); }
+  .lane:last-child { border-bottom: none; }
+  .lane .no { position: absolute; left: 6px; top: 10px; width: 20px; height: 20px; border-radius: 4px;
+    color: #fff; font-size: .75rem; font-weight: bold; text-align: center; line-height: 20px; }
+  .horse { position: absolute; top: 4px; left: 30px; font-size: 28px; transform: scaleX(-1); }
+  .goal { position: absolute; top: 0; bottom: 0; right: 36px; width: 4px;
+    background: repeating-linear-gradient(#fff 0 8px, #222 8px 16px); }
+  .card { background: var(--card); border-radius: 10px; padding: 12px 14px; margin-top: 12px; }
+  .list { display: grid; gap: 6px; }
+  .pick { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 2px solid transparent;
+    border-radius: 8px; cursor: pointer; background: rgba(127,127,127,.08); }
+  .pick.sel { border-color: var(--accent); }
+  .pick .name { flex: 1; }
+  .pick .odds { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  input[type=number] { width: 100px; padding: 8px; font-size: 1rem; border-radius: 6px; border: 1px solid #999; }
+  button { padding: 10px 16px; font-size: 1rem; border: none; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: #fff; font-weight: bold; }
+  button.sub { background: #777; }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { margin-top: 10px; min-height: 1.5em; font-weight: bold; }
+  .result { color: var(--muted); font-size: .9rem; margin-top: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🏇 競馬レースゲーム</h1>
+  <div class="bar">
+    <span>第 <b id="raceNo">1</b> レース</span>
+    <span class="coins">🪙 <span id="coins">1000</span></span>
+  </div>
+
+  <div class="track" id="track"><div class="goal"></div></div>
+
+  <div class="card">
+    <div>単勝：1着になる馬を選んでください</div>
+    <div class="list" id="list" style="margin-top:8px"></div>
+    <div class="row">
+      <label>賭け金 <input type="number" id="bet" min="10" step="10" value="100"></label>
+      <button id="start">スタート</button>
+      <button id="reset" class="sub">コインをリセット</button>
+    </div>
+    <div class="msg" id="msg"></div>
+    <div class="result" id="result"></div>
+  </div>
+</main>
+
+<script>
+const NAMES = ["サクラバクシン", "ミドリノカゼ", "クロイイナズマ", "ゴールドスター", "シロイツバサ", "アカイホノオ", "ハヤテマル", "ツキノウサギ"];
+const COLORS = ["#fff", "#222", "#d33", "#36c", "#eb0", "#2a2", "#f80", "#e5a"];
+const TEXT = ["#222", "#fff", "#fff", "#fff", "#222", "#fff", "#fff", "#fff"];
+const COUNT = 6;
+
+const $ = id => document.getElementById(id);
+let coins = load("coins", 1000);
+let raceNo = load("raceNo", 1);
+let horses = [];
+let picked = null;
+let running = false;
+
+function load(key, def) {
+  try { const v = localStorage.getItem("keiba-" + key); return v === null ? def : Number(v); }
+  catch { return def; }
+}
+function save() {
+  try { localStorage.setItem("keiba-coins", coins); localStorage.setItem("keiba-raceNo", raceNo); } catch {}
+}
+
+function newRace() {
+  const names = [...NAMES].sort(() => Math.random() - .5).slice(0, COUNT);
+  // 能力値から勝率を推定してオッズを決める
+  horses = names.map((name, i) => ({ name, no: i + 1, power: 0.7 + Math.random() * 0.6, pos: 0 }));
+  const total = horses.reduce((s, h) => s + h.power ** 6, 0);
+  horses.forEach(h => {
+    const p = h.power ** 6 / total;
+    h.odds = Math.max(1.1, Math.round((0.8 / p) * 10) / 10);
+  });
+  picked = null;
+  render();
+  $("raceNo").textContent = raceNo;
+  $("coins").textContent = coins;
+}
+
+function render() {
+  const track = $("track");
+  track.querySelectorAll(".lane").forEach(e => e.remove());
+  horses.forEach((h, i) => {
+    const lane = document.createElement("div");
+    lane.className = "lane";
+    lane.innerHTML = `<span class="no" style="background:${COLORS[i]};color:${TEXT[i]}">${h.no}</span><span class="horse" id="h${i}">🐎</span>`;
+    track.appendChild(lane);
+  });
+  const list = $("list");
+  list.innerHTML = "";
+  horses.forEach((h, i) => {
+    const d = document.createElement("div");
+    d.className = "pick" + (picked === i ? " sel" : "");
+    d.innerHTML = `<span class="no" style="position:static;display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:4px;font-weight:bold;font-size:.8rem;background:${COLORS[i]};color:${TEXT[i]};border:1px solid #888">${h.no}</span><span class="name">${h.name}</span><span class="odds">${h.odds.toFixed(1)} 倍</span>`;
+    d.onclick = () => { if (!running) { picked = i; render(); } };
+    list.appendChild(d);
+  });
+}
+
+function start() {
+  const bet = Math.floor(Number($("bet").value));
+  if (picked === null) return msg("馬を選んでください");
+  if (!(bet >= 10)) return msg("賭け金は10コイン以上にしてください");
+  if (bet > coins) return msg("コインが足りません");
+  coins -= bet;
+  $("coins").textContent = coins;
+  running = true;
+  $("start").disabled = $("reset").disabled = true;
+  msg("スタート！");
+  $("result").textContent = "";
+
+  const trackW = $("track").clientWidth - 30 - 36 - 28;
+  const order = [];
+  horses.forEach(h => h.pos = 0);
+  let last = performance.now();
+
+  function step(now) {
+    const dt = Math.min(50, now - last) / 16.7;
+    last = now;
+    horses.forEach((h, i) => {
+      if (h.pos >= trackW) return;
+      h.pos += (0.9 + h.power * 0.8 + (Math.random() - .5) * 1.6) * dt;
+      if (h.pos >= trackW) { h.pos = trackW; order.push(i); }
+      $("h" + i).style.left = 30 + h.pos + "px";
+    });
+    if (order.length < horses.length) requestAnimationFrame(step);
+    else finish(order, bet);
+  }
+  requestAnimationFrame(step);
+}
+
+function finish(order, bet) {
+  const win = order[0];
+  const w = horses[win];
+  if (win === picked) {
+    const pay = Math.floor(bet * w.odds);
+    coins += pay;
+    msg(`🎉 的中！ ${w.no}番 ${w.name}　払戻 ${pay} コイン`);
+  } else {
+    msg(`残念… 1着は ${w.no}番 ${w.name}`);
+  }
+  $("result").textContent = "着順：" + order.map((i, k) => `${k + 1}着 ${horses[i].no}番`).join(" / ");
+  raceNo++;
+  if (coins < 10) { msg($("msg").textContent + "　コインがなくなりました。リセットしてください"); }
+  save();
+  running = false;
+  $("start").disabled = $("reset").disabled = false;
+  $("start").textContent = "次のレース";
+  $("start").onclick = () => { $("start").textContent = "スタート"; $("start").onclick = start; newRace(); msg(""); $("result").textContent = ""; };
+  $("coins").textContent = coins;
+}
+
+function msg(t) { $("msg").textContent = t; }
+
+$("start").onclick = start;
+$("reset").onclick = () => { coins = 1000; raceNo = 1; save(); newRace(); msg("コインを1000に戻しました"); };
+newRace();
+</script>
+</body>
+</html>
